@@ -552,6 +552,8 @@ void MainWindowPrivate::runTestInThread(const QString& pathToTest, bool notify)
 
 		QString repeat = executableModel->data(index, QExecutableModel::RepeatTestsRole).toString();
 		if (repeat != "0" && repeat != "1") arguments << "--gtest_repeat=" + repeat;
+		double repeatCount = 1;
+		if (repeat.toInt() > 1) repeatCount = repeat.toInt();
 
 		int runDisabled = executableModel->data(index, QExecutableModel::RunDisabledTestsRole).toInt();
 		if (runDisabled) arguments << "--gtest_also_run_disabled_tests";
@@ -564,6 +566,10 @@ void MainWindowPrivate::runTestInThread(const QString& pathToTest, bool notify)
 
 		QString otherArgs = executableModel->data(index, QExecutableModel::ArgsRole).toString();
 		if(!otherArgs.isEmpty()) arguments << otherArgs;
+
+		// Set working directory to be the same as the executable
+		// (common standard for tests to find test-data files)
+		testProcess.setWorkingDirectory(QFileInfo(pathToTest).dir().path());
 
 		// Start the test
 		testProcess.start(pathToTest, arguments);
@@ -594,7 +600,9 @@ void MainWindowPrivate::runTestInThread(const QString& pathToTest, bool notify)
 				static QRegExp rx("([0-9]+) tests");
 				rx.indexIn(output);
 				tests = rx.cap(1).toInt();
+				if (!tests) tests = 1;
 				first = false;
+				tests *= repeatCount;
 			}
 			else
 			{
@@ -1028,6 +1036,8 @@ void MainWindowPrivate::createTestMenu()
 	selectAndRemoveTestAction = new QAction(q->style()->standardIcon(QStyle::SP_TrashIcon), "Remove Test...", testMenu);
 	selectAndRunTest = new QAction(q->style()->standardIcon(QStyle::SP_BrowserReload), "Run Test...", testMenu);
 	selectAndRunTest->setShortcut(QKeySequence(Qt::SHIFT + Qt::Key_F5));
+	selectAndRunAllTest = new QAction(q->style()->standardIcon(QStyle::SP_BrowserReload), "Run All Test...", testMenu);
+	selectAndRunAllTest->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_F5));
 	selectAndKillTest = new QAction(q->style()->standardIcon(QStyle::SP_DialogCloseButton), "Kill Test...", testMenu);
 	selectAndKillTest->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_F5));
 
@@ -1035,6 +1045,7 @@ void MainWindowPrivate::createTestMenu()
 	testMenu->addAction(selectAndRemoveTestAction);
 	testMenu->addSeparator();
 	testMenu->addAction(selectAndRunTest);
+	testMenu->addAction(selectAndRunAllTest);
 	testMenu->addAction(selectAndKillTest);
 
 	q->menuBar()->addMenu(testMenu);
@@ -1047,21 +1058,29 @@ void MainWindowPrivate::createTestMenu()
 #else
 		filter = "Test Executables (*)";
 #endif
-		QString filename = QFileDialog::getOpenFileName(q_ptr, "Select Test Executable", m_testDirectory, filter);
+		QString filename = "";
+		QStringList filenames = QFileDialog::getOpenFileNames(q_ptr, "Select Test Executable", m_testDirectory, filter);
 
-		if (filename.isEmpty())
+		if (filenames.isEmpty())
 			return;
 		else
 		{
-			QFileInfo info(filename);
-			m_testDirectory = info.absoluteDir().absolutePath();
+			foreach(QString filename, filenames)
+			{
+				QFileInfo info(filename);
+				m_testDirectory = info.absoluteDir().absolutePath();
+
+				QModelIndex existingIndex = executableModel->index(filename);
+				if (!existingIndex.isValid())
+					addTestExecutable(filename, true, QFileInfo(filename).lastModified());
+				else
+					executableTreeView->setCurrentIndex(existingIndex);
+			}
+
+			
 		}
 
-		QModelIndex existingIndex = executableModel->index(filename);
-		if (!existingIndex.isValid())
-			addTestExecutable(filename, true, QFileInfo(filename).lastModified());
-		else
-			executableTreeView->setCurrentIndex(existingIndex);
+		
 	});
 
 	connect(selectAndRemoveTestAction, &QAction::triggered, [this]
@@ -1074,6 +1093,15 @@ void MainWindowPrivate::createTestMenu()
 		QModelIndex index = getTestIndexDialog("Select Test to run:");
 		if(index.isValid())
 			runTestInThread(index.data(QExecutableModel::PathRole).toString(), false);
+	});
+
+	connect(selectAndRunAllTest, &QAction::triggered, [this]
+	{
+		for (size_t i = 0; i < executableTreeView->model()->rowCount(); ++i)
+		{
+			QModelIndex index = executableTreeView->model()->index(i, 0);
+			runTestInThread(index.data(QExecutableModel::PathRole).toString(), false);
+		}
 	});
 
 	connect(selectAndKillTest, &QAction::triggered, [this, q]
